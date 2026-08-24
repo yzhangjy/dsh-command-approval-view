@@ -22,7 +22,38 @@ export interface SlotsService {
   inject(key: string, callback: () => unknown): () => void
 }
 
-/** The client facade of the host `commandExplainer` Typert Remote. */
+/** The client facade of the host `commandExplainer` Typert Remote (`remote.commandExplainer`). */
 export interface CommandExplainerFace {
   explain(command: string): Promise<ExplainResult>
+}
+
+/** Identity-shaped codec schema for the client-side descriptor (parse is a passthrough). */
+export interface PassthroughSchema {
+  parse(value: unknown): unknown
+}
+
+export interface RemoteDescriptor {
+  id: string
+  service: string
+  namespace: string
+  method: string
+  implementation: string
+  invocation: { kind: 'direct' }
+  parameters: Array<{
+    name: string
+    wire: string
+    source: 'json'
+    codec: { mode: 'strict'; typeSymbol: string; schema: PassthroughSchema }
+  }>
+  result: { mode: 'strict'; typeSymbol: string; schema: PassthroughSchema }
+}
+
+export interface RemoteContribution {
+  package: string
+  descriptors: RemoteDescriptor[]
+}
+
+/** The typed Client Remote mount (`ctx.remote`), whose `$mount` installs a namespace facade. */
+export interface RemoteService {
+  $mount(contribution: RemoteContribution): Promise<() => Promise<void>>
 }

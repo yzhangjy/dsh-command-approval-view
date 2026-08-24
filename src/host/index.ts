@@ -36,10 +36,6 @@ interface LlmService {
   stream(options: Record<string, unknown>): AsyncIterable<{ type?: string; text?: string; reason?: { kind?: string; failure?: { message?: string } } }>
 }
 
-interface AgentLike {
-  session?: { id?: string }
-}
-
 function stripFences(raw: string): string {
   return String(raw || '').trim().replace(/^```[a-z]*\s*/i, '').replace(/\s*```$/, '').trim()
 }
@@ -78,7 +74,7 @@ async function streamText(llm: LlmService, options: Record<string, unknown>): Pr
   return text
 }
 
-async function modelExplain(ctx: Context, llm: LlmService, config: ExplainerConfig, command: string, sessionId?: string): Promise<ExplainResult> {
+async function modelExplain(ctx: Context, llm: LlmService, config: ExplainerConfig, command: string): Promise<ExplainResult> {
   const route = resolveRoute(ctx, config)
   const messages = [{
     id: 'm-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10),
@@ -93,7 +89,6 @@ async function modelExplain(ctx: Context, llm: LlmService, config: ExplainerConf
     messages,
     system: config.prompt || DEFAULT_PROMPT,
     maxTokens: config.maxTokens,
-    sessionId,
   }
   const text = stripFences(await streamText(llm, options))
   if (!text) throw new Error('模型输出为空')
@@ -112,12 +107,12 @@ async function withTimeout<T>(p: Promise<T>, ms: number, ctx: Context): Promise<
 /**
  * Explain the whole command: model first, deterministic lexicon on any failure.
  */
-async function explainCommand(ctx: Context, llm: LlmService, config: ExplainerConfig, rawCommand: string, sessionId?: string): Promise<ExplainResult> {
+async function explainCommand(ctx: Context, llm: LlmService, config: ExplainerConfig, rawCommand: string): Promise<ExplainResult> {
   if (!rawCommand.trim()) return { summary: '', fallback: 'empty' }
   if (!config.enabled) return { summary: '', fallback: 'disabled' }
   const command = normalizeCommand(rawCommand)
   try {
-    return await withTimeout(modelExplain(ctx, llm, config, command, sessionId), config.timeoutMs, ctx)
+    return await withTimeout(modelExplain(ctx, llm, config, command), config.timeoutMs, ctx)
   } catch (err) {
     const d = detExplain(command)
     d.diagnostic = err instanceof Error ? err.message : String(err)
@@ -206,10 +201,9 @@ class CommandExplainerService extends TypertRemoteService {
     this.config = config
   }
 
-  async remoteExportExplain(agent: AgentLike, command: string): Promise<ExplainResult> {
-    const sessionId = agent?.session?.id
+  async remoteExportExplain(command: string): Promise<ExplainResult> {
     const llm = this.ctx.get('llm') as LlmService
-    return explainCommand(this.ctx, llm, this.config, command, sessionId)
+    return explainCommand(this.ctx, llm, this.config, command)
   }
 }
 

@@ -12,7 +12,7 @@
 
 import React from 'react'
 import { detExplain, normalizeCommand, type ExplainResult } from '../shared/explain'
-import type { ClientCtx, CommandExplainerFace, SlotsService } from './services'
+import type { ClientCtx, CommandExplainerFace, RemoteContribution, RemoteService, SlotsService } from './services'
 
 const CSS =
   '.dsh-cav-root{padding:8px calc(var(--dsh-composer-side-clearance) + 16px) 12px;flex-direction:column;align-items:center;display:flex;max-height:100%;min-height:0;box-sizing:border-box}' +
@@ -216,7 +216,38 @@ interface ApprovalViewProps {
   [key: string]: unknown
 }
 
-function makeApprovalView(commandExplainer: CommandExplainerFace | undefined) {
+const PASSTHROUGH = { parse: (value: unknown): unknown => value }
+
+/**
+ * The client half of the Typert Remote contribution. The harness's client
+ * `remote` service does NOT auto-discover third-party `./remote` exports (its
+ * official assembly is static), so this plugin mounts the descriptor itself
+ * and then reads the resulting `remote.commandExplainer` facade.
+ */
+const REMOTE_CONTRIBUTION: RemoteContribution = {
+  package: 'dsh-command-approval-view',
+  descriptors: [
+    {
+      id: 'dsh-command-approval-view#commandExplainer/explain',
+      service: 'commandExplainer',
+      namespace: 'commandExplainer',
+      method: 'explain',
+      implementation: 'remoteExportExplain',
+      invocation: { kind: 'direct' },
+      parameters: [
+        {
+          name: 'command',
+          wire: 'command',
+          source: 'json',
+          codec: { mode: 'strict', typeSymbol: 'dsh-command-approval-view#commandExplainer/explain:command', schema: PASSTHROUGH },
+        },
+      ],
+      result: { mode: 'strict', typeSymbol: 'dsh-command-approval-view#commandExplainer/explain:result', schema: PASSTHROUGH },
+    },
+  ],
+}
+
+function makeApprovalView(getExplainer: () => CommandExplainerFace | undefined) {
   return function ApprovalView(props: Record<string, unknown>): React.ReactElement | null {
     const p = props as ApprovalViewProps
     const wait = p.matched
@@ -234,7 +265,8 @@ function makeApprovalView(commandExplainer: CommandExplainerFace | undefined) {
       if (!command) { setExplain(null); setLoading(false); return }
       let cancelled = false
       setExplain(detExplain(normalizeCommand(command)))
-      setLoading(Boolean(commandExplainer?.explain))
+      const commandExplainer = getExplainer()
+      setLoading(Boolean(commandExplainer && typeof commandExplainer.explain === 'function'))
       if (commandExplainer && typeof commandExplainer.explain === 'function') {
         commandExplainer.explain(command).then((res) => {
           if (!cancelled && res && res.summary) { setExplain(res); setLoading(false) }
@@ -247,14 +279,16 @@ function makeApprovalView(commandExplainer: CommandExplainerFace | undefined) {
 
     const answer = (outcome: 'allowed-once' | 'rejected') => {
       setAnswered(true)
-      const respond = wait.respond
-      if (!respond) return
-      respond({
-        ok: true,
-        value: { sessionId: wait.sessionId, approvalId: wait.payload?.approvalId, outcome },
-      }).then((receipt) => {
-        if (!(receipt && receipt.accepted)) setAnswered(false)
-      }).catch(() => setAnswered(false))
+      if (wait && typeof wait.respond === 'function') {
+        wait.respond({
+          ok: true,
+          value: { sessionId: wait.sessionId, approvalId: wait.payload?.approvalId, outcome },
+        }).then((receipt) => {
+          if (!(receipt && receipt.accepted)) setAnswered(false)
+        }).catch(() => setAnswered(false))
+      } else {
+        setAnswered(false)
+      }
     }
 
     const reason = wait.payload?.reason
@@ -287,12 +321,34 @@ function makeApprovalView(commandExplainer: CommandExplainerFace | undefined) {
 }
 
 const name = 'command-approval-view'
-const inject = ['slots']
+const inject = ['slots', 'remote']
 
 function apply(ctx: ClientCtx): void {
   const slots = ctx.get('slots') as SlotsService | undefined
+
+  // Mount the `commandExplainer` Remote contribution. The harness's client
+  // remote assembly is static for its own packages, so a third-party package
+  // must mount its descriptor itself. Best-effort: the approval view still
+  // renders the deterministic lexicon explanation if this ever fails.
+  const remote = ctx.get('remote') as RemoteService | undefined
+  if (remote && typeof remote.$mount === 'function') {
+    ctx.effect(() => {
+      let cancelled = false
+      let disposeRemote: (() => Promise<void>) | undefined
+      remote.$mount(REMOTE_CONTRIBUTION).then((dispose) => {
+        if (cancelled) { void dispose(); return }
+        disposeRemote = dispose
+      }).catch((error) => {
+        console.warn('dsh-command-approval-view: commandExplainer remote unavailable', error)
+      })
+      return () => {
+        cancelled = true
+        if (disposeRemote) void disposeRemote()
+      }
+    }, 'dsh-command-approval-view: remote')
+  }
+
   if (!slots) return
-  const commandExplainer = ctx.get('commandExplainer') as CommandExplainerFace | undefined
 
   ctx.effect(() => {
     const el = document.createElement('style')
@@ -302,7 +358,8 @@ function apply(ctx: ClientCtx): void {
     return () => el.remove()
   }, 'dsh-command-approval-view: styles')
 
-  const ApprovalView = makeApprovalView(commandExplainer)
+  const getExplainer = () => ctx.get('remote.commandExplainer') as CommandExplainerFace | undefined
+  const ApprovalView = makeApprovalView(getExplainer)
   slots.inject('conversation.composer', () => {
     return slots.register({ name: 'conversation.composer', select: selectApproval, priority: -100 }, ApprovalView)
   })
