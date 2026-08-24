@@ -22,7 +22,7 @@ export const inject = ['llm']
 export const DEFAULT_PROMPT =
   '你是 shell 命令解释器。用中文、用 1~3 句话，整体解释下面这条即将提交给用户审批的命令是做什么的，' +
   '顺带说明关键选项与参数（如 --profile、--patch、目录路径等）。' +
-  '只描述“这条命令做什么”，不判断是否应该允许，绝不实际执行命令。' +
+  '只描述"这条命令做什么"，不判断是否应该允许，绝不实际执行命令。' +
   '不输出 JSON、不分条列举、不分段；只输出一段连续中文。' +
   '反斜杠 \\ 后跟换行是续行，不要当成多条命令。不认识的字命令就跳过。'
 
@@ -125,16 +125,87 @@ async function explainCommand(ctx: Context, llm: LlmService, config: ExplainerCo
   }
 }
 
+/**
+ * ES decorator runtime helpers — identical to what the harness's own build
+ * emits for `@Remote` (the `@` decorator syntax is not parseable by plain
+ * Node ESM, so the source ships this pre-lowered form; tsdown passes it
+ * through verbatim).
+ */
+function __runInitializers(thisArg: unknown, initializers: unknown[], value?: unknown): unknown {
+  const useValue = arguments.length > 2
+  for (let i = 0; i < initializers.length; i++) {
+    value = useValue ? (initializers[i] as any).call(thisArg, value) : (initializers[i] as any).call(thisArg)
+  }
+  return useValue ? value : undefined
+}
+
+function __esDecorate(ctor: any, descriptorIn: any, decorators: any[], contextIn: any, initializers: any, extraInitializers: any[]): void {
+  const accept = (f: any): any => {
+    if (f !== undefined && typeof f !== 'function') throw new TypeError('Function expected')
+    return f
+  }
+  const kind = contextIn.kind
+  const key = kind === 'getter' ? 'get' : kind === 'setter' ? 'set' : 'value'
+  const target = !descriptorIn && ctor ? (contextIn.static ? ctor : ctor.prototype) : null
+  let descriptor: any = descriptorIn || (target ? Object.getOwnPropertyDescriptor(target, contextIn.name) : {})
+  let done = false
+  for (let i = decorators.length - 1; i >= 0; i--) {
+    const context: any = {}
+    for (const p in contextIn) context[p] = p === 'access' ? {} : contextIn[p]
+    for (const p in contextIn.access) context.access[p] = contextIn.access[p]
+    context.addInitializer = function (f: any) {
+      if (done) throw new TypeError('Cannot add initializers after decoration has completed')
+      extraInitializers.push(accept(f || null))
+    }
+    const result = decorators[i](kind === 'accessor' ? { get: descriptor.get, set: descriptor.set } : descriptor[key], context)
+    let v: any
+    if (kind === 'accessor') {
+      if (result === undefined) continue
+      if (result === null || typeof result !== 'object') throw new TypeError('Object expected')
+      if ((v = accept(result.get))) descriptor.get = v
+      if ((v = accept(result.set))) descriptor.set = v
+      if ((v = accept(result.init))) initializers.unshift(v)
+    } else if ((v = accept(result))) {
+      if (kind === 'field') initializers.unshift(v)
+      else descriptor[key] = v
+    }
+  }
+  if (target) Object.defineProperty(target, contextIn.name, descriptor)
+  done = true
+}
+
 /** Typert Remote face: `ctx.commandExplainer.explain(command)` from the browser. */
+let _remoteExportExplain_decorators: unknown[]
+const _instanceExtraInitializers: unknown[] = []
+
 class CommandExplainerService extends TypertRemoteService {
+  static {
+    const _metadata = (typeof Symbol === 'function' && (Symbol as any).metadata
+      ? Object.create((TypertRemoteService as any)[(Symbol as any).metadata] ?? null)
+      : undefined) as Record<PropertyKey, unknown> | undefined
+    _remoteExportExplain_decorators = [Remote('explain')]
+    __esDecorate(this, null, _remoteExportExplain_decorators, {
+      kind: 'method',
+      name: 'remoteExportExplain',
+      static: false,
+      private: false,
+      access: {
+        has: (obj: unknown) => 'remoteExportExplain' in (obj as object),
+        get: (obj: unknown) => (obj as any).remoteExportExplain,
+      },
+      metadata: _metadata,
+    }, null, _instanceExtraInitializers)
+    if (_metadata) Object.defineProperty(this, (Symbol as any).metadata, { enumerable: true, configurable: true, writable: true, value: _metadata })
+  }
+
   readonly config: ExplainerConfig
 
   constructor(ctx: Context, config: ExplainerConfig) {
     super(ctx, 'commandExplainer')
+    __runInitializers(this, _instanceExtraInitializers)
     this.config = config
   }
 
-  @Remote('explain')
   async remoteExportExplain(agent: AgentLike, command: string): Promise<ExplainResult> {
     const sessionId = agent?.session?.id
     const llm = this.ctx.get('llm') as LlmService
@@ -144,8 +215,5 @@ class CommandExplainerService extends TypertRemoteService {
 
 export function apply(ctx: Context, rawConfig?: Partial<ExplainerConfig>): void {
   const config = resolveConfig(rawConfig)
-  // Register even when disabled so a live settings toggle can take effect via
-  // a deep re-read of the resolved config at call time; the explain method
-  // itself respects `enabled` (returns 'disabled') for the degenerate case.
   void new CommandExplainerService(ctx, config)
 }
