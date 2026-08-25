@@ -1,11 +1,13 @@
-import { ExplainerConfig } from "./config-DjX1n6j9.js";
-import { Context } from "@deepseek-ai/cordis";
-
 //#region src/host/index.d.ts
-
+/**
+ * Host half of dsh-command-approval-view.
+ *
+ * All behavior lives in the client (syntax-highlighted approval view); the
+ * host row exists only so the bundle patch mounts this package cleanly.
+ */
 declare const name = "command-approval-view";
-/** Hard dependency: the model-call API used for the explanation. */
 declare const inject: string[];
-declare const DEFAULT_PROMPT: string;
-declare function apply(ctx: Context, rawConfig?: Partial<ExplainerConfig>): void; //#endregion
-export { DEFAULT_PROMPT, apply, inject, name };
+declare function apply(): void;
+
+//#endregion
+export { apply, inject, name };

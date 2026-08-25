@@ -2,18 +2,10 @@
 # reformatter after the base layer. Applied as this bundle's layer when the
 # package is installed (e.g. `dsh plugin --profile web add github:yzhangjy/dsh-command-approval-view`).
 #
-# Host half: registers the `commandExplainer` service (model explanation via
-# `@Remote`). Client half (package declares `dsh.client`): takes over the
-# `conversation.composer` approval prompt with a syntax-highlighted command
-# view plus a deterministic/lexicon explanation and the model explanation.
+# The host row is a no-op; the client half (package declares `dsh.client`)
+# takes over the `conversation.composer` approval prompt with a
+# syntax-highlighted command view and unchanged allow/reject buttons.
 
 - insert:
     - id: command-approval-view
       name: 'dsh-command-approval-view'
-      config:
-        enabled: true
-        provider: ''
-        model: ''
-        prompt: ''
-        timeoutMs: 20000
-        maxTokens: 500

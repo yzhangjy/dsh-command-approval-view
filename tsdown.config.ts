@@ -39,7 +39,7 @@ const NODE_ENV = process.env.NODE_ENV ?? 'production'
 export default defineConfig([
   {
     name: pkg.name,
-    entry: { index: 'src/host/index.ts', config: 'src/config.ts' },
+    entry: { index: 'src/host/index.ts' },
     outDir: 'lib',
     format: ['esm'],
     platform: 'node',

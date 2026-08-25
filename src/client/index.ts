@@ -1,18 +1,15 @@
 /**
- * Client half of dsh-command-approval-view (installed package bundle entry).
+ * Client half of dsh-command-approval-view.
  *
- * Takes over the `conversation.composer` approval prompt: renders the pending
- * shell command as a syntax-highlighted terminal view, an instant deterministic
- * lexicon explanation, and (when the host `commandExplainer` Remote is wired)
- * a model-generated whole-command explanation. Buttons keep the existing
- * `answer('allowed-once' | 'rejected')` semantics untouched.
+ * Reformats the `conversation.composer` approval prompt: renders the pending
+ * shell command as a syntax-highlighted terminal view. The buttons keep the
+ * existing `answer('allowed-once' | 'rejected')` semantics untouched, so the
+ * approval flow behaves exactly like the built-in panel.
  *
  * Ships as a CJS closure via `window.__ModuleLoader__.load({id, factory})`.
  */
 
 import React from 'react'
-import { detExplain, normalizeCommand, type ExplainResult } from '../shared/explain'
-import type { ClientCtx, CommandExplainerFace, RemoteContribution, RemoteService, SlotsService } from './services'
 
 const CSS =
   '.dsh-cav-root{padding:8px calc(var(--dsh-composer-side-clearance) + 16px) 12px;flex-direction:column;align-items:center;display:flex;max-height:100%;min-height:0;box-sizing:border-box}' +
@@ -35,14 +32,7 @@ const CSS =
   '.dsh-cav-tok-env{color:var(--dsw-alias-state-warn-primary);font-weight:500}' +
   '.dsh-cav-tok-op{color:var(--dsw-alias-state-error-primary);font-weight:600}' +
   '.dsh-cav-tok-comment,.dsh-cav-tok-cont{color:var(--dsw-alias-label-tertiary);font-style:italic}' +
-  '.dsh-cav-tok-arg{color:var(--dsw-alias-label-primary)}' +
-  '.dsh-cav-loading{flex-direction:row;align-items:center;gap:8px;font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);display:flex}' +
-  '.dsh-cav-spinner{width:13px;height:13px;border:2px solid var(--dsw-alias-border-l2);border-top-color:var(--dsw-alias-brand-primary);border-radius:50%;animation:dsh-cav-spin .8s linear infinite;display:inline-block;flex:none}' +
-  '@keyframes dsh-cav-spin{to{transform:rotate(360deg)}}' +
-  '.dsh-cav-exp{margin-top:2px;border:1px solid var(--dsw-alias-border-l1);border-radius:12px;padding:10px 12px;flex-direction:column;gap:6px;display:flex}' +
-  '.dsh-cav-exp-title{font-size:12px;line-height:16px;color:var(--dsw-alias-label-secondary);font-weight:500}' +
-  '.dsh-cav-exp-summary{font-size:13px;line-height:20px;color:var(--dsw-alias-label-primary);white-space:pre-wrap}' +
-  '.dsh-cav-exp-diag{font-size:11px;line-height:16px;color:var(--dsw-alias-state-error-primary);white-space:pre-wrap;font-family:var(--ds-font-family-code)}'
+  '.dsh-cav-tok-arg{color:var(--dsw-alias-label-primary)}'
 
 interface WaitLike {
   key?: string
@@ -191,16 +181,6 @@ function highlight(command: string): React.ReactElement {
   )
 }
 
-function explainView(exp: ExplainResult | null): React.ReactElement | null {
-  if (!exp || !exp.summary) return null
-  const source = exp.fallback === 'model' ? ' · 模型生成' : exp.fallback === 'lexicon' ? ' · 词库' : ''
-  return React.createElement('div', { className: 'dsh-cav-exp' },
-    React.createElement('div', { className: 'dsh-cav-exp-title' }, '执行说明（仅供参考）' + source),
-    React.createElement('div', { className: 'dsh-cav-exp-summary' }, exp.summary),
-    exp.diagnostic ? React.createElement('div', { className: 'dsh-cav-exp-diag' }, '诊断：' + exp.diagnostic) : null,
-  )
-}
-
 function selectApproval(owner: unknown): unknown {
   const interactions = (owner as { interactions?: unknown[] } | undefined)?.interactions
   if (!Array.isArray(interactions)) return null
@@ -216,138 +196,69 @@ interface ApprovalViewProps {
   [key: string]: unknown
 }
 
-const PASSTHROUGH = { parse: (value: unknown): unknown => value }
+function ApprovalView(props: Record<string, unknown>): React.ReactElement | null {
+  const p = props as ApprovalViewProps
+  const wait = p.matched
+  if (!wait) return null
 
-/**
- * The client half of the Typert Remote contribution. The harness's client
- * `remote` service does NOT auto-discover third-party `./remote` exports (its
- * official assembly is static), so this plugin mounts the descriptor itself
- * and then reads the resulting `remote.commandExplainer` facade.
- */
-const REMOTE_CONTRIBUTION: RemoteContribution = {
-  package: 'dsh-command-approval-view',
-  descriptors: [
-    {
-      id: 'dsh-command-approval-view#commandExplainer/explain',
-      service: 'commandExplainer',
-      namespace: 'commandExplainer',
-      method: 'explain',
-      implementation: 'remoteExportExplain',
-      invocation: { kind: 'direct' },
-      parameters: [
-        {
-          name: 'command',
-          wire: 'command',
-          source: 'json',
-          codec: { mode: 'strict', typeSymbol: 'dsh-command-approval-view#commandExplainer/explain:command', schema: PASSTHROUGH },
-        },
-      ],
-      result: { mode: 'strict', typeSymbol: 'dsh-command-approval-view#commandExplainer/explain:result', schema: PASSTHROUGH },
-    },
-  ],
+  const command = p.useSession
+    ? p.useSession<string | undefined>((snapshot) => readCommand(snapshot, wait.payload?.callId))
+    : undefined
+
+  const [answered, setAnswered] = React.useState(false)
+
+  const answer = (outcome: 'allowed-once' | 'rejected') => {
+    setAnswered(true)
+    if (wait && typeof wait.respond === 'function') {
+      wait.respond({
+        ok: true,
+        value: { sessionId: wait.sessionId, approvalId: wait.payload?.approvalId, outcome },
+      }).then((receipt) => {
+        if (!(receipt && receipt.accepted)) setAnswered(false)
+      }).catch(() => setAnswered(false))
+    } else {
+      setAnswered(false)
+    }
+  }
+
+  const reason = wait.payload?.reason
+  const headline = (reason !== undefined && reason !== null && reason !== '')
+    ? reason
+    : ('请求确认执行：' + (wait.payload?.toolName || ''))
+
+  return React.createElement('div', { className: 'dsh-cav-root', 'data-approval-key': wait.key },
+    React.createElement('div', { className: 'dsh-cav-card' },
+      React.createElement('div', { className: 'dsh-cav-strip' },
+        React.createElement('span', { className: 'dsh-cav-dot' }),
+        '待确认执行命令',
+      ),
+      React.createElement('div', { className: 'dsh-cav-body', 'data-approval-scroll': '', tabIndex: 0, role: 'group', 'aria-label': '命令确认详情' },
+        React.createElement('div', { className: 'dsh-cav-headline' }, headline),
+        command !== undefined ? highlight(command) : null,
+      ),
+      React.createElement('div', { className: 'dsh-cav-actionRow' },
+        React.createElement('button', { type: 'button', className: 'dsh-cav-btn dsh-cav-reject', disabled: answered, onClick: () => answer('rejected') }, '拒绝'),
+        React.createElement('button', { type: 'button', className: 'dsh-cav-btn dsh-cav-allow', disabled: answered, onClick: () => answer('allowed-once') }, '允许一次'),
+      ),
+    ),
+  )
 }
 
-function makeApprovalView(getExplainer: () => CommandExplainerFace | undefined) {
-  return function ApprovalView(props: Record<string, unknown>): React.ReactElement | null {
-    const p = props as ApprovalViewProps
-    const wait = p.matched
-    if (!wait) return null
+interface SlotsService {
+  register(registration: { name: string; select: (owner: unknown) => unknown; priority: number }, component: (props: Record<string, unknown>) => unknown): unknown
+  inject(key: string, callback: () => unknown): () => void
+}
 
-    const command = p.useSession
-      ? p.useSession<string | undefined>((snapshot) => readCommand(snapshot, wait.payload?.callId))
-      : undefined
-
-    const [answered, setAnswered] = React.useState(false)
-    const [explain, setExplain] = React.useState<ExplainResult | null>(null)
-    const [loading, setLoading] = React.useState(false)
-
-    React.useEffect(() => {
-      if (!command) { setExplain(null); setLoading(false); return }
-      let cancelled = false
-      setExplain(detExplain(normalizeCommand(command)))
-      const commandExplainer = getExplainer()
-      setLoading(Boolean(commandExplainer && typeof commandExplainer.explain === 'function'))
-      if (commandExplainer && typeof commandExplainer.explain === 'function') {
-        commandExplainer.explain(command).then((res) => {
-          if (!cancelled && res && res.summary) { setExplain(res); setLoading(false) }
-        }).catch(() => {
-          if (!cancelled) setLoading(false)
-        })
-      }
-      return () => { cancelled = true }
-    }, [command])
-
-    const answer = (outcome: 'allowed-once' | 'rejected') => {
-      setAnswered(true)
-      if (wait && typeof wait.respond === 'function') {
-        wait.respond({
-          ok: true,
-          value: { sessionId: wait.sessionId, approvalId: wait.payload?.approvalId, outcome },
-        }).then((receipt) => {
-          if (!(receipt && receipt.accepted)) setAnswered(false)
-        }).catch(() => setAnswered(false))
-      } else {
-        setAnswered(false)
-      }
-    }
-
-    const reason = wait.payload?.reason
-    const headline = (reason !== undefined && reason !== null && reason !== '')
-      ? reason
-      : ('请求确认执行：' + (wait.payload?.toolName || ''))
-
-    return React.createElement('div', { className: 'dsh-cav-root', 'data-approval-key': wait.key },
-      React.createElement('div', { className: 'dsh-cav-card' },
-        React.createElement('div', { className: 'dsh-cav-strip' },
-          React.createElement('span', { className: 'dsh-cav-dot' }),
-          '待确认执行命令',
-        ),
-        React.createElement('div', { className: 'dsh-cav-body', 'data-approval-scroll': '', tabIndex: 0, role: 'group', 'aria-label': '命令确认详情' },
-          React.createElement('div', { className: 'dsh-cav-headline' }, headline),
-          command !== undefined ? highlight(command) : null,
-          loading ? React.createElement('div', { className: 'dsh-cav-loading' },
-            React.createElement('span', { className: 'dsh-cav-spinner' }),
-            '正在生成执行说明…',
-          ) : null,
-          explainView(explain),
-        ),
-        React.createElement('div', { className: 'dsh-cav-actionRow' },
-          React.createElement('button', { type: 'button', className: 'dsh-cav-btn dsh-cav-reject', disabled: answered, onClick: () => answer('rejected') }, '拒绝'),
-          React.createElement('button', { type: 'button', className: 'dsh-cav-btn dsh-cav-allow', disabled: answered, onClick: () => answer('allowed-once') }, '允许一次'),
-        ),
-      ),
-    )
-  }
+interface ClientCtx {
+  get<T>(key: string): T | undefined
+  effect(callback: () => (() => void) | void, label?: string): void
 }
 
 const name = 'command-approval-view'
-const inject = ['slots', 'remote']
+const inject = ['slots']
 
 function apply(ctx: ClientCtx): void {
   const slots = ctx.get('slots') as SlotsService | undefined
-
-  // Mount the `commandExplainer` Remote contribution. The harness's client
-  // remote assembly is static for its own packages, so a third-party package
-  // must mount its descriptor itself. Best-effort: the approval view still
-  // renders the deterministic lexicon explanation if this ever fails.
-  const remote = ctx.get('remote') as RemoteService | undefined
-  if (remote && typeof remote.$mount === 'function') {
-    ctx.effect(() => {
-      let cancelled = false
-      let disposeRemote: (() => Promise<void>) | undefined
-      remote.$mount(REMOTE_CONTRIBUTION).then((dispose) => {
-        if (cancelled) { void dispose(); return }
-        disposeRemote = dispose
-      }).catch((error) => {
-        console.warn('dsh-command-approval-view: commandExplainer remote unavailable', error)
-      })
-      return () => {
-        cancelled = true
-        if (disposeRemote) void disposeRemote()
-      }
-    }, 'dsh-command-approval-view: remote')
-  }
-
   if (!slots) return
 
   ctx.effect(() => {
@@ -358,8 +269,6 @@ function apply(ctx: ClientCtx): void {
     return () => el.remove()
   }, 'dsh-command-approval-view: styles')
 
-  const getExplainer = () => ctx.get('remote.commandExplainer') as CommandExplainerFace | undefined
-  const ApprovalView = makeApprovalView(getExplainer)
   slots.inject('conversation.composer', () => {
     return slots.register({ name: 'conversation.composer', select: selectApproval, priority: -100 }, ApprovalView)
   })
